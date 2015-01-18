@@ -5,7 +5,7 @@ from scipy import stats
 import numpy as np 
 from statsmodels.sandbox.distributions.extras import mvstdnormcdf
 from itertools import izip
-from scipy.optimize import minimize, fmin_slsqp
+from scipy.optimize import minimize, fmin_slsqp, approx_fprime
 import math
 
 FLOAT_EPS = np.finfo(float).eps
@@ -133,17 +133,20 @@ class OrderedProbit(st.discrete.discrete_model.OrderedModel):
             full_output=1, disp=1, callback=None, fun = "minimize", iprint=None, **kwargs):
         if start_params is None: 
             start_params = list(np.zeros(len(self.exog[0]))) + range(max(self.endog))
-        constraints = self.cons_generator([(len(self.exog[0]),len(self.exog[0]) + max(self.endog))], dict_out=False)
+        if fun== "fmin_slsqp":
+            constraints = self.cons_generator([(len(self.exog[0]),len(self.exog[0]) + max(self.endog))], dict_out=False)
+        else:
+            constraints = self.cons_generator([(len(self.exog[0]),len(self.exog[0]) + max(self.endog))], dict_out=True)
         if fun == "minimize":
             #http://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.optimize.minimize.html#scipy.optimize.minimize
             return minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, constraints=constraints,
-                        options = {'maxiter':maxiter, 'disp':disp}, callback=callback
+                        options = {'maxiter':maxiter, 'disp':disp}, callback=callback, jac =lambda x:-self.score(x)
                         )
         elif fun == "fmin_slsqp":
             #http://docs.scipy.org/doc/scipy-0.14.0/reference/generated/scipy.optimize.fmin_slsqp.html#scipy.optimize.fmin_slsqp
             return fmin_slsqp(lambda x:-self.loglike(x), fprime=lambda x:-self.score(x), x0=start_params, 
                               disp=disp, callback=callback, full_output=full_output, iprint=iprint,
-                              ieqcons = constraints, iter=maxiter, fprime_ieqcons =self.cons_fprime,
+                              ieqcons = constraints, iter=maxiter, fprime_ieqcons =self.cons_fprime, 
                               bounds = [(-10,10)]*len(start_params))
         #discretefit = ProbitResults(self, bnryfit)
         #return BinaryResultsWrapper(discretefit)
@@ -196,6 +199,38 @@ class OrderedProbit(st.discrete.discrete_model.OrderedModel):
                 #s+= np.log(np.clip(1-self.cdf(mu[Y-1] - np.dot(X,beta)), FLOAT_EPS, 1))
             #print s
         return s
+
+def hessian ( f, x0, epsilon=1.e-5, linear_approx=False,  *args ):
+    """
+    A numerical approximation to the Hessian matrix of arbitrary function f at
+    location x0 (hopefully, the minimum)
+    
+    AUTHOR: jgomezdans , https://gist.github.com/jgomezdans
+    """
+    # ``f`` is the cost function implementation
+    # The next line calculates an approximation to the first
+    # derivative
+    tol = [np.sqrt(np.finfo(np.float).eps)]*len(x.x)
+    f1 = approx_fprime( x0, f,  tol, *args) 
+ 
+    # This is a linear approximation. Obviously much more efficient
+    # if cost function is linear
+    if linear_approx:
+        f1 = np.matrix(f1)
+        return f1.transpose() * f1    
+    # Allocate space for the hessian
+    n = x0.shape[0]
+    hessian = np.zeros ( ( n, n ) )
+    # The next loop fill in the matrix
+    xx = x0
+    for j in xrange( n ):
+        xx0 = xx[j] # Store old value
+        xx[j] = xx0 + epsilon # Perturb with finite difference
+        # Recalculate the partial derivatives for this new point
+        f2 = approx_fprime( x0, f, tol, *args) 
+        hessian[:, j] = (f2 - f1)/epsilon # scale...
+        xx[j] = xx0 # Restore initial value of x0        
+    return hessian
 
 
 
