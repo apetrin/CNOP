@@ -10,17 +10,50 @@ from scipy.optimize import minimize
 
 FLOAT_EPS = np.finfo(float).eps
 
+class llist(list):
+    """Special list for Ordered Models. Element -1 is -Inf, Final element is Inf.
+
+    --------------------------------------------------------
+    EXAMPLE:
+    x = llist([12.,14,2.2])
+    x[1]
+    >>>14
+    x[-1], x[3]
+    >>>(-inf, inf)
+    x[-2]
+    >>>IndexError: Not supported index -2 was called.
+    """
+
+    def __getitem__(self, l):
+        if   l == -1:
+            return -np.inf
+        elif l == len(self):
+            return np.inf
+        elif l < -1 or l > len(self):
+            raise IndexError, "Not supported index %i was called."%l
+        else:
+            #help(super(list, self))
+            return super(llist,self).__getitem__(l)
+
 class CNOP(st.discrete.discrete_model.DiscreteModel):
     """Correlatesdf BLA BLA BLA
     
     Description:
     TO BE WRITTEN"""
 
+    def _ordered_recode(self, endog):
+        #Recode data to [0,.....,N]
+        #NOT YET INTEGRATED
+        uniques = sorted(set(endog))
+        return [uniques.index(i) for i in endog]
+
     def __init__(self,endog, exog, **kwargs):
         #endog is a dict of endog.vars
         self.x, self.zplus, self.zminus = map(endog.get, ['x', 'zplus', 'zminus'])
+        #self.y = self._ordered_recode(exog) - kwargs.get('infl_y', 0)    #NOT YET INTEGRATED
         self.y = exog
         self.interest_step = kwargs.get('interest_step', 0.00125)
+        self.model = kwargs.get('model', 'CNOP')
         if "J" in kwargs:
             self.J = int(kwargs.get("J"))
         else:        
@@ -78,6 +111,11 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         for st, fin in slice:
             for i in range(st,fin-1):
                 constr.append({"type":type,"fun":lambda x, i=i:np.array([float(x[i+1]-x[i])])})
+        if self.model == "CNOPc": #CNOP MODEL CODE
+            constr.append({"type":type,"fun":lambda x:np.array([float(x[-1]+1)])})
+            constr.append({"type":type,"fun":lambda x:np.array([float(1-x[-1])])})
+            constr.append({"type":type,"fun":lambda x:np.array([float(x[-2]+1)])})
+            constr.append({"type":type,"fun":lambda x:np.array([float(1-x[-2])])})
         return constr
 
     def loglike(self, params):
@@ -98,17 +136,20 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         np.dot(pan[1].loc[3.1998],params)
         """
         params = list(params)
+        #print(params)
+        #print("")
         alpha, beta = params[:2], params[2:2+len(self.x.minor_axis)]
         del params[:2+len(self.x.minor_axis)]
-        mum, gammam =  params[:self.J], params[self.J:self.J+len(self.zminus.minor_axis)]
+        mum, gammam =  llist(params[:self.J]), params[self.J:self.J+len(self.zminus.minor_axis)]
         del params[:self.J+len(self.zminus.minor_axis)]
-        mup, gammap = params[:self.J], params[self.J:self.J+len(self.zplus.minor_axis)]
+        mup, gammap = llist(params[:self.J]), params[self.J:self.J+len(self.zplus.minor_axis)]
         del params[:self.J+len(self.zplus.minor_axis)]
-        rhop, rhom = params
-        del params[:2]
+        if self.model == "CNOPc":
+            rhop, rhom = params
+            del params[:2]
         assert len(params) is 0, "params isn't empty!"
 
-        s = 0
+        s = 0.0
         y, x = self.y, self.x
         zm, zp = self.zminus, self.zplus
         for (yitem, ydf), (xitem, xdf),   (zmitem, zmdf), (zpitem, zpdf) in \
@@ -124,18 +165,36 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                 assert zmtime == zptime, "Times doesn't match: zpitem != zmitem"
 
                 j = int(round(yelement["Y"],10) / self.interest_step )
-                if j == 0:
-                    pr = self.cdf(alpha[1] - np.dot(xelement, beta)) - self.cdf(alpha[0] - np.dot(xelement, beta))
-                if j >= 0:
-                    pr =  self.cdf(np.dot(xelement, beta) - alpha[1], mup[abs(j)-1]-np.dot(zpelement, gammap), -rhop)
-                    pr -= self.cdf(np.dot(xelement, beta) - alpha[1], mup[abs(j)-2]-np.dot(zpelement, gammap), -rhop)
-                if j <= 0:
-                    pr =  self.cdf(alpha[0] - np.dot(xelement, beta), mum[abs(j)-1]-np.dot(zmelement, gammam), rhom)
-                    pr -= self.cdf(alpha[0] - np.dot(xelement, beta), mum[abs(j)-2]-np.dot(zmelement, gammam), rhom)
+                pr=0
+                if self.model == "CNOPc": #CNOPc MODEL CODE
+                    #THIS CODE HAS AN ERROR! Border J should be seen independently!
+                    if j == 0:
+                        pr += self.cdf(alpha[1] - np.dot(xelement, beta)) - self.cdf(alpha[0] - np.dot(xelement, beta))
+                    if j >= 0:
+                        pr +=  self.cdf(np.dot(xelement, beta) - alpha[1], mup[abs(j)-1]-np.dot(zpelement, gammap), -rhop)
+                        pr -= self.cdf(np.dot(xelement, beta) - alpha[1], mup[abs(j)-2]-np.dot(zpelement, gammap), -rhop)
+                    if j <= 0:
+                        pr +=  self.cdf(alpha[0] - np.dot(xelement, beta), mum[abs(j)-1]-np.dot(zmelement, gammam), rhom)
+                        pr -= self.cdf(alpha[0] - np.dot(xelement, beta), mum[abs(j)-2]-np.dot(zmelement, gammam), rhom)
+                else: #CNOP MODEL CODE
+                    if j<0:
+                        pr +=  (self.cdf(alpha[0]-np.dot(xelement, beta))) * \
+                                (self.cdf(mum[-j-1]-np.dot(zmelement,gammam))-self.cdf(mum[-j-2]-np.dot(zmelement,gammam)))
+                    elif j==0:
+                        a = self.cdf(alpha[1]-np.dot(xelement, beta)) 
+                        b = self.cdf(alpha[0]-np.dot(xelement, beta)) 
+                        c = self.cdf(mup[0]-np.dot(zpelement, gammap)) 
+                        d = self.cdf(mum[0]-np.dot(zmelement, gammam)) 
+                        pr += a + c - (a*c + b*d)
+                    elif j>0:
+                        pr += (1-self.cdf(alpha[1]-np.dot(xelement, beta))) * \
+                                (self.cdf(mup[j]-np.dot(zpelement,gammap))-self.cdf(mup[j-1]-np.dot(zpelement,gammap)))
+                    else:
+                        raise ValueError, "j = %i not incorrectly defined" %j
                 s += np.log(np.clip(pr, FLOAT_EPS, 1))
-        return s 
+        return s
 
-    def fit(self, start_params=None, method='COBYLA', maxiter=35,
+    def fit(self, start_params=None, method='SLSQP', maxiter=35,
             full_output=1, disp=1, callback=None, **kwargs):
         """method are COBYLA and SLSQP [DEPRECIATED ADD JAC!]. ___Subject to check, COBYLA is better on simple tasks"""
         if start_params is None: start_params = np.zeros(self.param_len)
@@ -143,8 +202,8 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                                       (self.alpha_len + self.beta_len + self.J + self.gammam_len,
                                        self.alpha_len + self.beta_len + self.J + self.gammam_len + self.J)
                                       ])
-        constraints = []
-        return minimize(lambda x:-self.loglike(x), x0=start_params, method=method, constraints=constraints,
+        #constraints = []
+        return minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, constraints=constraints,
                         options = {'maxiter':maxiter, 'disp':disp}, callback=callback
                         )
 
@@ -153,32 +212,60 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
 #TEST = CNOP({'x':[12,13], 'zplus':[14,15], 'zminus': [17,17], 'J':2},[12.15, 12.30])
 #TEST.tester()
 
-
-import numpy as np
-import pandas as pd
-import matplotlib.pylab as plt
-import warnings
-from scipy.optimize import minimize, check_grad
-from pandas.tools.plotting import scatter_matrix
-
-np.set_printoptions(precision = 3, suppress = True)
-pd.set_option('display.mpl_style', 'default') # Make the graphs a bit prettier
+if __name__=="__main__":
+ 
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pylab as plt
+    import warnings
+    from scipy.optimize import minimize, check_grad
+    from pandas.tools.plotting import scatter_matrix
 
 
-df = pd.read_csv(u"simul_data_CNOP.csv",sep=';').dropna()
-l = dict(zip(df["NO"].unique(),map(lambda x: df[df['NO']==1], df["NO"].unique())))
-pan = pd.Panel(l)
-pan.major_axis = pan[1]["MONTH"]
+
+###############################################################################
+###################### OLD CODE BELOW #########################################
+###############################################################################
+#np.set_printoptions(precision = 3, suppress = True)
+#pd.set_option('display.mpl_style', 'default') # Make the graphs a bit prettier
+
+
+#df = pd.read_csv(u"simul_data_CNOP.csv",sep=';').dropna()
+#l = dict(zip(df["NO"].unique(),map(lambda x: df[df['NO']==1], df["NO"].unique())))
+#pan = pd.Panel(l)
+#pan.major_axis = pan[1]["MONTH"]
 
 
 ###### SUBSAMPLING: 32 is the starting sample, single observation only
-y = pan.ix[32:,:,['Y']]
-x = pan.ix[32:,:,['X1','X2','X3',u'X4Z1', u'X5Z3', u'X6Z4']]
-zplus = pan.ix[32:,:,[u'X4Z1', u'X5Z3', u'X6Z4', u'Z2', u'Z5', u'Z6', u'Z7',]]
-zminus = pan.ix[32:,:,[u'X4Z1', u'X5Z3', u'X6Z4', u'Z2', u'Z5', u'Z6', u'Z7',]]
-endog = dict( (name,eval(name)) for name in ['x','zplus','zminus'] )
+#y = pan.ix[32:,:,['Y']]
+#x = pan.ix[32:,:,['X1','X2','X3',u'X4Z1', u'X5Z3', u'X6Z4']]
+#zplus = pan.ix[32:,:,[u'X4Z1', u'X5Z3', u'X6Z4', u'Z2', u'Z5', u'Z6', u'Z7',]]
+#zminus = pan.ix[32:,:,[u'X4Z1', u'X5Z3', u'X6Z4', u'Z2', u'Z5', u'Z6', u'Z7',]]
+#endog = dict( (name,eval(name)) for name in ['x','zplus','zminus'] )
 
-CNOP2 = CNOP(endog, y)
-print CNOP2.fit()
+#CNOP2 = CNOP(endog, y)
+#print CNOP2.fit()
+###############################################################################
+###################### OLD CODE ABOVE #########################################
+###############################################################################
 
 
+    df2 = pd.read_csv(u"cnop_MC_dat_short.tsv", sep="\t").dropna()
+    exog = df2[["X1", "X2", "X3"]]
+    endog = df2[["Y"]]-3
+
+    l = {0:df2}
+    pan = pd.Panel(l)
+    y = pan.ix[:,:,['Y']]-3
+    x = pan.ix[:,:,['X1','X2']]
+    zminus = pan.ix[:,:,['X1','X3']]
+    zplus = pan.ix[:,:,['X2','X3']]
+    endog = dict( (name,eval(name)) for name in ['x','zplus','zminus'] )
+    CNOP3 = CNOP(endog, y, model='CNOP',interest_step=1, J=2)
+
+    x_real_3 = [0.7681,1.2221, 0.5084,0.3067, # alpha0 alpha0 and beta
+            -0.6585,0.4256,0.2779,0.2621, #zminus
+            0.1102,1.3007,0.2866,0.9772, #zplus
+            ]
+
+    print(CNOP3.loglike(x_real_3))
