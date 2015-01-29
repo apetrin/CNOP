@@ -1,4 +1,4 @@
 CNOP
 ====
 
-Correlated Nested Ordered Probit model 
+Cross-Nested Ordered Probit model 
