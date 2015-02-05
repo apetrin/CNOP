@@ -200,37 +200,43 @@ class OrderedProbit(st.discrete.discrete_model.OrderedModel):
             #print s
         return s
 
-def hessian ( f, x0, epsilon=1.e-5, linear_approx=False,  *args ):
-    """
-    A numerical approximation to the Hessian matrix of arbitrary function f at
-    location x0 (hopefully, the minimum)
-    
-    AUTHOR: jgomezdans , https://gist.github.com/jgomezdans
-    """
-    # ``f`` is the cost function implementation
-    # The next line calculates an approximation to the first
-    # derivative
-    tol = [np.sqrt(np.finfo(np.float).eps)]*len(x.x)
-    f1 = approx_fprime( x0, f,  tol, *args) 
- 
-    # This is a linear approximation. Obviously much more efficient
-    # if cost function is linear
-    if linear_approx:
-        f1 = np.matrix(f1)
-        return f1.transpose() * f1    
-    # Allocate space for the hessian
-    n = x0.shape[0]
-    hessian = np.zeros ( ( n, n ) )
-    # The next loop fill in the matrix
-    xx = x0
-    for j in xrange( n ):
-        xx0 = xx[j] # Store old value
-        xx[j] = xx0 + epsilon # Perturb with finite difference
-        # Recalculate the partial derivatives for this new point
-        f2 = approx_fprime( x0, f, tol, *args) 
-        hessian[:, j] = (f2 - f1)/epsilon # scale...
-        xx[j] = xx0 # Restore initial value of x0        
-    return hessian
+    def se(self,params):
+        """
+        Return standard errors at optimum point
+        """
+        hess = self.hessian(params)
+        return np.sqrt(np.linalg.inv(-hess).diagonal())
+
+    def hessian (self, x0, epsilon=1.e-5, linear_approx=False,  *args ):
+        """
+        A numerical approximation to the Hessian matrix of loglike function f at
+        location x0 (hopefully, the minimum)
+
+        AUTHOR: jgomezdans , https://gist.github.com/jgomezdans
+        """
+        # ``f`` is the cost function
+        f = self.loglike
+        # The next line calculates the first derivative
+        f1 = self.score(x0)
+
+        # This is a linear approximation. Obviously much more efficient
+        # if cost function is linear
+        if linear_approx:
+            f1 = np.matrix(f1)
+            return f1.transpose() * f1    
+        # Allocate space for the hessian
+        n = x0.shape[0]
+        hessian = np.zeros ( ( n, n ) )
+        # The next loop fill in the matrix
+        xx = x0
+        for j in xrange( n ):
+            xx0 = xx[j] # Store old value
+            xx[j] = xx0 + epsilon # Perturb with finite difference
+            # Recalculate the partial derivatives for this new point
+            f2 = self.score(x0)
+            hessian[:, j] = (f2 - f1)/epsilon # scale...
+            xx[j] = xx0 # Restore initial value of x0        
+        return hessian
 
 
 
