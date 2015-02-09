@@ -7,6 +7,7 @@ from statsmodels.sandbox.distributions.extras import mvstdnormcdf
 from scipy.optimize import minimize
 from itertools import izip
 from scipy.optimize import minimize
+import math
 
 FLOAT_EPS = np.finfo(float).eps
 
@@ -52,9 +53,10 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         uniques = sorted(set(endog))
         return [uniques.index(i) for i in endog]
 
-    def __init__(self,endog, exog, **kwargs):
+    def __init__(self, endog, exog, **kwargs):
         #endog is a dict of endog.vars
         self.x, self.zplus, self.zminus = map(endog.get, ['x', 'zplus', 'zminus'])
+
         #self.y = self._ordered_recode(exog) - kwargs.get('infl_y', 0)    #NOT YET INTEGRATED
         self.y = exog
         self.interest_step = kwargs.get('interest_step', 0.00125)
@@ -117,12 +119,14 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         return value
 
     @staticmethod
-    def pdf(X):
+    def pdf(x):
         """
-        This function is just an alias for scipy.stats.norm.pdf
+        This function returns normal PDF at point x
         """
-        X = np.asarray(X)
-        return stats.norm._pdf(X)
+        pi = math.pi
+        denom = (2*pi)**.5
+        num = math.exp(-(float(x))**2/2)
+        return num/denom
 
     def tester(self):
         x = [14.1,18.2,12.1,23.1,-12,123]
@@ -348,7 +352,7 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         hess = self.hessian(params)
         return np.sqrt(np.linalg.inv(-hess).diagonal())
 
-    def hessian (self, x0, epsilon=1.e-5, linear_approx=False,  *args ):
+    def hessian(self, x0, epsilon=1.e-5, linear_approx=False,  *args ):
         """
         A numerical approximation to the Hessian matrix of arbitrary function f at
         location x0 (hopefully, the minimum)
@@ -378,7 +382,16 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
             hessian[:, j] = (f2 - f1)/epsilon # scale...
             xx[j] = xx0 # Restore initial value of x0        
         return hessian
-
+     
+    #SAMPLE get_margeff(at='overall', method='dydx', atexog=None, dummy=False, count=False) 
+    '''def get_margeff(y, params, (x,zplus, zminus)):
+        """Marginal Effects for CNOP"""
+        ##### YOUR CODE COMES HERE:
+        beta = params[2:2+len(self.x.minor_axis)
+        pe = np.zeros(
+        ##delete pass after you enter code
+        pass
+    '''
 
 
 #TEST = CNOP({'x':[12,13], 'zplus':[14,15], 'zminus': [17,17], 'J':2},[12.15, 12.30])
