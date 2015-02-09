@@ -66,7 +66,6 @@ class OrderedProbit(st.discrete.discrete_model.OrderedModel):
         -----
         This function is just an alias for scipy.stats.norm.pdf
         """
-        X = np.asarray(X)
         return stats.norm._pdf(X)
 
     def cons_generator(self, slice, dict_out=True):
