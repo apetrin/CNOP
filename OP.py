@@ -51,22 +51,18 @@ class OrderedProbit(st.discrete.discrete_model.OrderedModel):
         """
         return stats.norm._cdf(X)
 
-    def pdf(self, X):
+    @staticmethod
+    def pdf(x):
         """
         Probit (Normal) probability density function
         Parameters
         ----------
-        X : array-like
-            The linear predictor of the model (XB).
-        Returns
-        --------
-        pdf : ndarray
-            The value of the normal density function for each point of X.
-        Notes
-        -----
-        This function is just an alias for scipy.stats.norm.pdf
+        X : float
         """
-        return stats.norm._pdf(X)
+        pi = math.pi
+        denom = (2*pi)**.5
+        num = math.exp(-(float(x))**2/2)
+        return num/denom
 
     def cons_generator(self, slice, dict_out=True):
         """
