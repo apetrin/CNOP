@@ -3,11 +3,16 @@ import statsmodels as st
 import statsmodels.api as sm
 from scipy import stats
 import numpy as np 
+import pandas as pd
 from statsmodels.sandbox.distributions.extras import mvstdnormcdf
 from scipy.optimize import minimize
-from itertools import izip
+from itertools import izip, repeat
 from scipy.optimize import minimize
 import math
+import multiprocessing
+from joblib import Parallel, delayed  
+
+
 
 FLOAT_EPS = np.finfo(float).eps
 
@@ -52,6 +57,13 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         #NOT YET INTEGRATED
         uniques = sorted(set(endog))
         return [uniques.index(i) for i in endog]
+
+    @staticmethod
+    def threshold(x,thresholds=[],values=[-1,0,1]):
+        for threshold,val in zip(thresholds,values):
+            if x < threshold: 
+                return val
+        return values[-1]
 
     def __init__(self,endog, exog, **kwargs):
         #exog is a dict of exog.vars
@@ -101,11 +113,11 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         Return sequence: beta, alpha, gammam, mum, gammap, mup, rhom, rhop
         """
         params = list(params)
-        beta, alpha = params[:self.beta_len], params[self.beta_len:self.beta_len+2]
-        del params[:2+self.beta_len]
+        beta, alpha = params[:self.beta_len], params[self.beta_len:self.beta_len+self.alpha_len]
+        del params[:self.beta_len+self.alpha_len]
         gammam, mum =  params[:self.gammam_len], llist(params[self.gammam_len:self.J+self.gammam_len])
         del params[:self.J+self.gammam_len]
-        gammap, mup = params[:self.gammap_len], llist(params[self.J:self.J+self.gammap_len])
+        gammap, mup = params[:self.gammap_len], llist(params[self.gammap_len:self.J+self.gammap_len])
         del params[:self.J+self.gammap_len]
         if self.model == "CNOPc":
             rhop, rhom = params
@@ -114,7 +126,6 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
             rhop, rhom = None,None
         assert len(params) is 0, "params isn't empty!"
         return beta, alpha, gammam, mum, gammap, mup, rhom, rhop
-
 
     informcode = {0: 'normal completion with ERROR < EPS',
                   1: '''completion with ERROR > EPS and MAXPTS function values used;
@@ -219,7 +230,7 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
     def loglike(self, params):
         """
         Log-likelihood of CNOP model.
-        params -- [beta, alpha, gamma-, mu-, gamma+, mu+, rho-, rho+]
+        params -- [beta, alpha, gamma-, mu-, gamma+, mu+, rho+, rho-]
         """
         beta, alpha, gammam, mum, gammap, mup, rhom, rhop = self.get_params(params)
 
@@ -229,7 +240,15 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                                   (yelement, xelement, zmelement, zpelement)
                                  )
         return s
+        #pool = Pool(processes=cpu_count())
+        inputs = izip(repeat((alpha, beta,mum, gammam,mup, gammap,rhop, rhom)), 
+                      self.observations_generator())
+        #result = pool.map(self.loglike_obs, inputs)
+
         num_cores = multiprocessing.cpu_count()
+        #results = Parallel(n_jobs=num_cores)(delayed(self.loglike_obs)(i) for i in inputs)  
+
+        #return sum(results)
 
     def score(self, params):
         """Score function (Jacobian) for loglike"""
@@ -307,17 +326,49 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                     raise ValueError, "j = %i not incorrectly defined" %j
         return score        
 
+    def get_start_params(self):
+        dfy  = pd.concat([df for name, df in self.y.iteritems()])
+        dfx  = pd.concat([dfy]+[df for name, df in self.x.iteritems()]     ,axis=1)
+        dfzm = pd.concat([dfy]+[df for name, df in self.zminus.iteritems()],axis=1)
+        dfzp = pd.concat([dfy]+[df for name, df in self.zplus.iteritems()] ,axis=1)
+        
+        def func(x):
+            if x>0: return 1
+            if x<0: return -1
+            if x==0: return 0
+        exog_firststage1 = dfx.ix[:,dfx.columns[1]:]
+        endog_firststage1 = dfx["Y"].apply(func)
+        
+        df_firststage2 = dfzm[dfzm["Y"]<=0]
+        exog_firststage2 = df_firststage2.ix[:,dfzm.columns[1]:]
+        endog_firststage2 = df_firststage2["Y"]
+        
+        df_firststage3 = dfzp[dfzp["Y"]>=0]
+        exog_firststage3 = df_firststage3.ix[:,dfzp.columns[1]:]
+        endog_firststage3 = df_firststage3["Y"]
+
+        from OrderedProbit import OrderedProbit
+        OP_firststage1 = OrderedProbit(endog_firststage1, exog_firststage1)
+        OP_firststage2 = OrderedProbit(endog_firststage2, exog_firststage2)
+        OP_firststage3 = OrderedProbit(endog_firststage3, exog_firststage3)
+        
+        x_firststage1=OP_firststage1.fit(method = "SLSQP", maxiter=200, disp=False, tol=1e-2)
+        x_firststage2=OP_firststage2.fit(method = "SLSQP", maxiter=200, disp=False, tol=1e-2)
+        x_firststage3=OP_firststage3.fit(method = "SLSQP", maxiter=200, disp=False, tol=1e-2)
+        
+        start_params=np.concatenate((x_firststage1.x,x_firststage2.x,x_firststage3.x))
+        return start_params
+
     def fit(self, start_params=None, method='SLSQP', maxiter=35,
             full_output=1, disp=1, callback=None, **kwargs):
         """method are COBYLA and SLSQP [DEPRECIATED ADD JAC!]. ___Subject to check, COBYLA is better on simple tasks"""
-        if start_params is None: start_params = np.zeros(self.param_len)
+        if start_params is None: start_params = self.get_start_params()
         constraints = self.cons_generator([(self.beta_len,self.beta_len+self.alpha_len),
-                                      (self.beta_len + self.alpha_len + self.gammam_len, 
-                                       self.beta_len + self.alpha_len + self.gammam_len + self.J),
-                                      (self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len,
-                                       self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len + self.J)
-                                      ])
-        #constraints = []
+                                           (self.beta_len + self.alpha_len + self.gammam_len, 
+                                            self.beta_len + self.alpha_len + self.gammam_len + self.J),
+                                           (self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len,
+                                            self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len + self.J)
+                                          ])
         return minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, constraints=constraints,
                         options = {'maxiter':maxiter, 'disp':disp}, callback=callback, jac =lambda x:-self.score(x)
                         )
@@ -329,7 +380,7 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         hess = self.hessian(params)
         return np.sqrt(np.linalg.inv(-hess).diagonal())
 
-    def hessian (self, x0, epsilon=1.e-5, linear_approx=False,  *args ):
+    def hessian (self, x0, epsilon=1.e-5, *args ):
         """
         A numerical approximation to the Hessian matrix of arbitrary function f at
         location x0 (hopefully, the minimum)
@@ -341,11 +392,6 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         # The next line calculates the first derivative
         f1 = self.score(x0)
 
-        # This is a linear approximation. Obviously much more efficient
-        # if cost function is linear
-        if linear_approx:
-            f1 = np.matrix(f1)
-            return f1.transpose() * f1    
         # Allocate space for the hessian
         n = x0.shape[0]
         hessian = np.zeros ( ( n, n ) )
@@ -359,6 +405,10 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
             hessian[:, j] = (f2 - f1)/epsilon # scale...
             xx[j] = xx0 # Restore initial value of x0        
         return hessian
+
+
+#TEST = CNOP({'x':[12,13], 'zplus':[14,15], 'zminus': [17,17], 'J':2},[12.15, 12.30])
+#TEST.tester()
      
     #SAMPLE get_margeff(at='overall', method='dydx', atexog=None, dummy=False, count=False) 
     '''def get_margeff(y, params, (x,zplus, zminus)):
@@ -422,10 +472,10 @@ if __name__=="__main__":
     x = pan.ix[:,:,['X1','X2']]
     zminus = pan.ix[:,:,['X1','X3']]
     zplus = pan.ix[:,:,['X2','X3']]
-    endog = dict( (name,eval(name)) for name in ['x','zplus','zminus'] )
-    CNOP3 = CNOP(endog, y, model='CNOP',interest_step=1, J=2, disp=False)
+    exog = dict( (name,eval(name)) for name in ['x','zplus','zminus'] )
+    CNOP3 = CNOP(y, exog, model='CNOP',interest_step=1, J=2, disp=False)
 
-    x_real_3 = [, 0.5084,0.3067,0.7681,1.2221 #  beta and alpha0 alpha0
+    x_real_3 = [0.5084,0.3067,0.7681,1.2221 #  beta and alpha0 alpha0
             ,0.2621,0.2779,-0.6585,0.4256 #zminus
             ,0.2866,0.9772,0.1102,1.3007 #zplus
             ]
