@@ -369,9 +369,12 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                                            (self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len,
                                             self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len + self.J)
                                           ])
-        return minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, constraints=constraints,
-                        options = {'maxiter':maxiter, 'disp':disp}, callback=callback, jac =lambda x:-self.score(x)
-                        )
+        self.optim_res = minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, 
+                                     constraints=constraints,
+                                     options = {'maxiter':maxiter, 'disp':disp}, 
+                                     callback=callback, jac=lambda x:-self.score(x)
+                                    )
+        return self.optim_res
 
     def se(self,params):
         """
@@ -411,14 +414,61 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
 #TEST.tester()
      
     #SAMPLE get_margeff(at='overall', method='dydx', atexog=None, dummy=False, count=False) 
-    '''def get_margeff(y, params, (x,zplus, zminus)):
-        """Marginal Effects for CNOP"""
-        ##### YOUR CODE COMES HERE:
-        beta = params[2:2+len(self.x.minor_axis)
-        pe = np.zeros(
-        ##delete pass after you enter code
-        pass
-    '''
+    def get_margeff(self, y, x, zplus, zminus, params=None):
+        ''' Returns a vector of marginal effects for each unique exogenuous,
+            given y, x, zplus, zminus
+        '''
+        if params is None:
+            params = self.optim_res.x
+        beta, alpha, gammam, mum, gammap, mup, rhom, rhop = self.get_params(params)
+        # Converting lists of parameters into Series format (to keep respectove labels)
+        beta = pd.Series(beta, index=self.x.minor_axis)
+        gammam = pd.Series(gammam, index=self.zminus.minor_axis)
+        gammap = pd.Series(gammap, index=self.zplus.minor_axis)
+        j = int(round(y,10) / self.interest_step )
+        if j==0:
+            pdfa2 = self.pdf(alpha[1]-pd.Series.dot(x, beta))
+            pdfa1 = self.pdf(alpha[0]-pd.Series.dot(x, beta))
+            cdfa2 = self.cdf(alpha[1]-pd.Series.dot(x, beta))
+            cdfa1 = self.cdf(alpha[0]-pd.Series.dot(x, beta))
+            pdfmupj = self.pdf(mup[j]-pd.Series.dot(zplus, gammap))
+            cdfmupj = self.cdf(mup[j]-pd.Series.dot(zplus, gammap))
+            pdfmumj1 = self.pdf(mum[self.J+j-1]-pd.Series.dot(zminus, gammam))
+            cdfmumj1 = self.cdf(mum[self.J+j-1]-pd.Series.dot(zminus, gammam))
+            me_beta = (-(pdfa2-pdfa1)+pdfa2*cdfmupj-pdfa1*(1-cdfmumj1))*beta
+            me_gammap = (-(1-cdfa2)*pdfmupj)*gammap
+            me_gammam = (cdfa1*pdfmumj1)*gammam
+            me = me_beta.add(me_gammap, fill_value=0)
+            me = me.add(me_gammam, fill_value=0)
+            return me
+        elif j>0:
+            pdfa2 = self.pdf(alpha[1]-pd.Series.dot(x, beta))
+            cdfa2 = self.cdf(alpha[1]-pd.Series.dot(x, beta))
+            pdfmupj = self.pdf(mup[j]-pd.Series.dot(zplus, gammap))
+            pdfmupj1 = self.pdf(mup[j-1]-pd.Series.dot(zplus, gammap))
+            cdfmupj = self.cdf(mup[j]-pd.Series.dot(zplus, gammap))
+            cdfmupj1 = self.cdf(mup[j-1]-pd.Series.dot(zplus, gammap))
+            me_beta = (pdfa2*(cdfmupj-cdfmupj1))*beta
+            me_gammap = (-(1-cdfa2)*(pdfmupj-pdfmupj1)*gammap
+            me_gammam = 0*gammam
+            me = me_beta.add(me_gammap, fill_value=0)
+            me = me.add(me_gammam, fill_value=0)
+            return me
+        elif j<0:
+            pdfa1 = self.pdf(alpha[0]-pd.Series.dot(x, beta))
+            cdfa1 = self.cdf(alpha[0]-pd.Series.dot(x, beta))
+            pdfmumj = self.pdf(mum[self.J+j]-pd.Series.dot(zminus, gammam))
+            cdfmumj = self.cdf(mum[self.J+j]-pd.Series.dot(zminus, gammam))
+            pdfmumj1 = self.pdf(mum[self.J+j-1]-pd.Series.dot(zminus, gammam))
+            cdfmumj1 = self.cdf(mum[self.J+j-1]-pd.Series.dot(zminus, gammam))
+            me_beta = (-pdfa1*(cdfmumj-cdfmumj1))*beta
+            me_gammap = 0*gammap
+            me_gammam = (-cdfa1*(pdfmumj-pdfmumj1))*gammam
+            me = me_beta.add(me_gammap, fill_value=0)
+            me = me.add(me_gammam, fill_value=0)
+            return me 
+        else:
+            raise ValueError, "j = %i not incorrectly defined" %j
 
 
 #TEST = CNOP({'x':[12,13], 'zplus':[14,15], 'zminus': [17,17], 'J':2},[12.15, 12.30])
