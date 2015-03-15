@@ -96,17 +96,17 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         zm, zp = self.zminus, self.zplus
         for (yitem, ydf), (xitem, xdf),   (zmitem, zmdf), (zpitem, zpdf) in \
         izip(y.iteritems(), x.iteritems(), zm.iteritems(), zp.iteritems() ): 
-            for (ytime, yelement), (xtime, xelement), (zmtime, zmelement), (zptime, zpelement) in \
-            izip(ydf.iterrows(), xdf.iterrows(), zmdf.iterrows(), zpdf.iterrows() ): 
+            for yelement, xelement, zmelement, zpelement in \
+            izip(ydf.itertuples(), xdf.itertuples(), zmdf.itertuples(), zpdf.itertuples() ): 
                 #Two Sums Here,
                 #xelement, zmelement, zpelement are Series of interest for item xitem
                 # and for time xitem. Items and times are identical throughout theree Panels
-                assert xitem == zmitem, "Items doesn't match: xitem != zmitem"
-                assert zmitem == zpitem, "Items doesn't match: zpitem != zmitem"
-                assert xtime == zmtime, "Times doesn't match: xitem != zmitem"
-                assert zmtime == zptime, "Times doesn't match: zpitem != zmitem"
+                #assert xitem == zmitem, "Items doesn't match: xitem != zmitem"
+                #assert zmitem == zpitem, "Items doesn't match: zpitem != zmitem"
+                #assert xtime == zmtime, "Times doesn't match: xitem != zmitem"
+                #assert zmtime == zptime, "Times doesn't match: zpitem != zmitem"
 
-                yield yelement, xelement, zmelement, zpelement
+                yield map(np.asarray, (yelement[1:], xelement[1:], zmelement[1:], zpelement[1:]))
 
     def get_params(self, params):
         """Splits params from single list to named lists
@@ -191,13 +191,16 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
             constr.append({"type":type,"fun":lambda x:np.array([float(1-x[-2])])})
         return constr
 
-    def loglike_obs(self, (alpha, beta,mum, gammam,mup, gammap,rhop, rhom),
+    def loglike_obs((alpha, beta,mum, gammam,mup, gammap,rhop, rhom),
                           (yelement, xelement, zmelement, zpelement)
                     ):
         """
         Log-likelihood for single observation
         """
-        j = int(round(yelement["Y"],10) / self.interest_step )
+        #print yelement
+        #print type(yelement)
+
+        j = int(round(yelement[0],10) / self.interest_step )
         pr=0
         if self.model == "CNOPc": #CNOPc MODEL CODE
             #THIS CODE HAS AN ERROR! Border J should be seen independently!
@@ -230,7 +233,7 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
     def loglike(self, params):
         """
         Log-likelihood of CNOP model.
-        params -- [beta, alpha, gamma-, mu-, gamma+, mu+, rho+, rho-]
+        params -- [beta, alpha, gamma-, mu-, gamma+, mu+, rho-, rho+]
         """
         beta, alpha, gammam, mum, gammap, mup, rhom, rhop = self.get_params(params)
 
@@ -240,15 +243,12 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                                   (yelement, xelement, zmelement, zpelement)
                                  )
         return s
-        #pool = Pool(processes=cpu_count())
-        inputs = izip(repeat((alpha, beta,mum, gammam,mup, gammap,rhop, rhom)), 
-                      self.observations_generator())
-        #result = pool.map(self.loglike_obs, inputs)
-
+        #f=self.loglike_obs
+        p = multiprocessing.Pool(multiprocessing.cpu_count()) 
+        #return sum(p.map(optimiser, zip(repeat(self),repeat((alpha, beta,mum, gammam,mup, gammap,rhop, rhom)),
+        #                         self.observations_generator())
+        #                 ))
         num_cores = multiprocessing.cpu_count()
-        #results = Parallel(n_jobs=num_cores)(delayed(self.loglike_obs)(i) for i in inputs)  
-
-        #return sum(results)
 
     def score(self, params):
         """Score function (Jacobian) for loglike"""
@@ -256,7 +256,7 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         
         score = np.zeros(self.param_len)
         for yelement, xelement, zmelement, zpelement in self.observations_generator():
-            j = int(round(yelement["Y"],10) / self.interest_step )
+            j = int(round(yelement[0],10) / self.interest_step )
             pr = 0.
             if self.model == "CNOP": #CNOP MODEL CODE
                 if j<0:
@@ -359,6 +359,8 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         start_params=np.concatenate((x_firststage1.x,x_firststage2.x,x_firststage3.x))
         return start_params
 
+
+    
     def fit(self, start_params=None, method='SLSQP', maxiter=35,
             full_output=1, disp=1, callback=None, **kwargs):
         """method are COBYLA and SLSQP [DEPRECIATED ADD JAC!]. ___Subject to check, COBYLA is better on simple tasks"""
@@ -369,12 +371,10 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                                            (self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len,
                                             self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len + self.J)
                                           ])
-        self.optim_res = minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, 
-                                     constraints=constraints,
-                                     options = {'maxiter':maxiter, 'disp':disp}, 
-                                     callback=callback, jac=lambda x:-self.score(x)
-                                    )
-        return self.optim_res
+        #constraints = []
+        return minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, constraints=constraints,
+                        options = {'maxiter':maxiter, 'disp':disp}, callback=callback, jac =lambda x:-self.score(x)
+                        )
 
     def se(self,params):
         """
