@@ -10,7 +10,8 @@ from itertools import izip, repeat
 from scipy.optimize import minimize
 import math
 import multiprocessing
-from joblib import Parallel, delayed  
+#from joblib import Parallel, delayed  
+import warnings
 
 
 
@@ -52,13 +53,6 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
     TO BE WRITTEN"""
 
     @staticmethod
-    def _ordered_recode(endog):
-        #Recode data to [0,.....,N]
-        #NOT YET INTEGRATED
-        uniques = sorted(set(endog))
-        return [uniques.index(i) for i in endog]
-
-    @staticmethod
     def threshold(x,thresholds=[],values=[-1,0,1]):
         for threshold,val in zip(thresholds,values):
             if x < threshold: 
@@ -96,17 +90,17 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         zm, zp = self.zminus, self.zplus
         for (yitem, ydf), (xitem, xdf),   (zmitem, zmdf), (zpitem, zpdf) in \
         izip(y.iteritems(), x.iteritems(), zm.iteritems(), zp.iteritems() ): 
-            for yelement, xelement, zmelement, zpelement in \
-            izip(ydf.itertuples(), xdf.itertuples(), zmdf.itertuples(), zpdf.itertuples() ): 
+            for (ytime, yelement), (xtime, xelement), (zmtime, zmelement), (zptime, zpelement) in \
+            izip(ydf.iterrows(), xdf.iterrows(), zmdf.iterrows(), zpdf.iterrows() ): 
                 #Two Sums Here,
                 #xelement, zmelement, zpelement are Series of interest for item xitem
                 # and for time xitem. Items and times are identical throughout theree Panels
-                #assert xitem == zmitem, "Items doesn't match: xitem != zmitem"
-                #assert zmitem == zpitem, "Items doesn't match: zpitem != zmitem"
-                #assert xtime == zmtime, "Times doesn't match: xitem != zmitem"
-                #assert zmtime == zptime, "Times doesn't match: zpitem != zmitem"
+                assert xitem == zmitem, "Items doesn't match: xitem != zmitem"
+                assert zmitem == zpitem, "Items doesn't match: zpitem != zmitem"
+                assert xtime == zmtime, "Times doesn't match: xitem != zmitem"
+                assert zmtime == zptime, "Times doesn't match: zpitem != zmitem"
 
-                yield map(np.asarray, (yelement[1:], xelement[1:], zmelement[1:], zpelement[1:]))
+                yield yelement, xelement, zmelement, zpelement
 
     def get_params(self, params):
         """Splits params from single list to named lists
@@ -191,16 +185,13 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
             constr.append({"type":type,"fun":lambda x:np.array([float(1-x[-2])])})
         return constr
 
-    def loglike_obs((alpha, beta,mum, gammam,mup, gammap,rhop, rhom),
+    def loglike_obs(self, (alpha, beta,mum, gammam,mup, gammap,rhop, rhom),
                           (yelement, xelement, zmelement, zpelement)
                     ):
         """
         Log-likelihood for single observation
         """
-        #print yelement
-        #print type(yelement)
-
-        j = int(round(yelement[0],10) / self.interest_step )
+        j = int(round(yelement["Y"],10) / self.interest_step )
         pr=0
         if self.model == "CNOPc": #CNOPc MODEL CODE
             #THIS CODE HAS AN ERROR! Border J should be seen independently!
@@ -233,7 +224,7 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
     def loglike(self, params):
         """
         Log-likelihood of CNOP model.
-        params -- [beta, alpha, gamma-, mu-, gamma+, mu+, rho-, rho+]
+        params -- [beta, alpha, gamma-, mu-, gamma+, mu+, rho+, rho-]
         """
         beta, alpha, gammam, mum, gammap, mup, rhom, rhop = self.get_params(params)
 
@@ -243,12 +234,87 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                                   (yelement, xelement, zmelement, zpelement)
                                  )
         return s
-        #f=self.loglike_obs
-        p = multiprocessing.Pool(multiprocessing.cpu_count()) 
-        #return sum(p.map(optimiser, zip(repeat(self),repeat((alpha, beta,mum, gammam,mup, gammap,rhop, rhom)),
-        #                         self.observations_generator())
-        #                 ))
+        #pool = Pool(processes=cpu_count())
+        inputs = izip(repeat((alpha, beta,mum, gammam,mup, gammap,rhop, rhom)), 
+                      self.observations_generator())
+        #result = pool.map(self.loglike_obs, inputs)
+
         num_cores = multiprocessing.cpu_count()
+        #results = Parallel(n_jobs=num_cores)(delayed(self.loglike_obs)(i) for i in inputs)  
+
+        #return sum(results)
+
+    def score_obs(self, (alpha, beta, mum, gammam, mup, gammap, rhop, rhom),
+                                    (yelement, xelement, zmelement, zpelement) ):
+        """Score function (Jacobian) for loglike for particular observation"""
+        j = int(round(yelement["Y"],10) / self.interest_step )
+        pr = 0.
+        if self.model == "CNOP": #CNOP MODEL CODE
+            if j<0:
+                pr =  (self.cdf(alpha[0]-np.dot(xelement, beta))) * \
+                        (self.cdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.cdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
+                if pr == 0: 
+                    pr=FLOAT_EPS
+                #PARTIAL DERIVATIVES BELOW ARE DENOTED BY P (prime)
+                alphap = [self.pdf(alpha[0]-np.dot(xelement, beta)) *
+                             (self.cdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.cdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
+                          ,0.]
+                betap = -xelement * self.pdf(alpha[0]-np.dot(xelement, beta)) * \
+                             (self.cdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.cdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
+                mump = np.zeros(self.mum_len)
+                mump[self.J+j]   =  self.cdf(alpha[0]-np.dot(xelement, beta)) * self.pdf(mum[self.J+j]-np.dot(zmelement,gammam))
+                mump[self.J+j-1] = -self.cdf(alpha[0]-np.dot(xelement, beta)) * self.pdf(mum[self.J+j-1]-np.dot(zmelement,gammam))
+                gammamp = -zmelement * self.cdf(alpha[0]-np.dot(xelement, beta)) *\
+                             (self.pdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.pdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
+                mupp = np.zeros(self.mup_len)
+                gammapp = np.zeros(self.gammap_len)
+                score_local = np.concatenate((betap,alphap,gammamp,mump,gammapp,mupp)) / pr
+                return score_local 
+            elif j==0:
+                a = self.cdf(alpha[1]-np.dot(xelement, beta)) 
+                b = self.cdf(alpha[0]-np.dot(xelement, beta)) 
+                c = self.cdf(mup[0]-np.dot(zpelement, gammap)) 
+                d = self.cdf(mum[self.J-1]-np.dot(zmelement, gammam)) 
+                pr = a + c - (a*c + b*d)
+                if pr == 0: 
+                    pr=FLOAT_EPS
+                # Xpdf denotes PDF for X
+                apdf = self.pdf(alpha[1]-np.dot(xelement, beta)) 
+                bpdf = self.pdf(alpha[0]-np.dot(xelement, beta)) 
+                cpdf = self.pdf(mup[0]-np.dot(zpelement, gammap)) 
+                dpdf = self.pdf(mum[self.J-1]-np.dot(zmelement, gammam)) 
+                #Manually computed
+                alphap = [-bpdf * d , apdf * (1.-c)]
+                betap = -xelement * (apdf*(1.-c)-bpdf*d) #???
+                mump = [0.0]*(self.mum_len-1) + [-b*dpdf]
+                gammamp = zmelement * b * dpdf
+                mupp = [(1.-a)*cpdf] + [0.0]*(self.mup_len-1)
+                gammapp = zpelement * (a-1.) * cpdf
+                score_local = np.concatenate((betap,alphap,gammamp,mump,gammapp,mupp)) / pr
+                return score_local 
+            elif j>0:
+                pr = (1-self.cdf(alpha[1]-np.dot(xelement, beta))) * \
+                        (self.cdf(mup[j]-np.dot(zpelement,gammap))-self.cdf(mup[j-1]-np.dot(zpelement,gammap)))
+                if pr == 0: 
+                    pr=FLOAT_EPS
+                #PARTIAL DERIVATIVES BELOW ARE DENOTED BY P (prime)
+                alphap = [0,
+                          -self.pdf(alpha[1]-np.dot(xelement, beta)) *
+                             (self.cdf(mup[j]-np.dot(zpelement,gammap))-self.cdf(mup[j-1]-np.dot(zpelement,gammap)))
+                          ]
+                betap = xelement * self.pdf(alpha[1]-np.dot(xelement, beta)) * \
+                             (self.cdf(mup[j]-np.dot(zpelement,gammap))-self.cdf(mup[j-1]-np.dot(zpelement,gammap)))
+                mump = np.zeros(self.mum_len)
+                gammamp = np.zeros(self.gammap_len)
+                mupp = llist(np.zeros(self.mup_len))
+                mupp[j]   =  (1-self.cdf(alpha[1]-np.dot(xelement, beta))) * self.pdf(mup[ j ]-np.dot(zpelement,gammap))
+                mupp[j-1] = -(1-self.cdf(alpha[1]-np.dot(xelement, beta))) * self.pdf(mup[j-1]-np.dot(zpelement,gammap))
+                gammapp = -zpelement * (1-self.cdf(alpha[1]-np.dot(xelement, beta))) *\
+                             (self.pdf(mup[j]-np.dot(zpelement,gammap))-self.pdf(mup[j-1]-np.dot(zpelement,gammap))) #???
+                score_local = np.concatenate((betap,alphap,gammamp,mump,gammapp,mupp)) / pr
+                return score_local 
+            else:
+                raise ValueError, "j = %i not incorrectly defined" %j
 
     def score(self, params):
         """Score function (Jacobian) for loglike"""
@@ -256,75 +322,21 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         
         score = np.zeros(self.param_len)
         for yelement, xelement, zmelement, zpelement in self.observations_generator():
-            j = int(round(yelement[0],10) / self.interest_step )
-            pr = 0.
-            if self.model == "CNOP": #CNOP MODEL CODE
-                if j<0:
-                    pr =  (self.cdf(alpha[0]-np.dot(xelement, beta))) * \
-                            (self.cdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.cdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
-                    if pr == 0: 
-                        pr=FLOAT_EPS
-                    #PARTIAL DERIVATIVES BELOW ARE DENOTED BY P (prime)
-                    alphap = [self.pdf(alpha[0]-np.dot(xelement, beta)) *
-                                 (self.cdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.cdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
-                              ,0.]
-                    betap = -xelement * self.pdf(alpha[0]-np.dot(xelement, beta)) * \
-                                 (self.cdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.cdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
-                    mump = np.zeros(self.mum_len)
-                    mump[self.J+j]   =  self.cdf(alpha[0]-np.dot(xelement, beta)) * self.pdf(mum[self.J+j]-np.dot(zmelement,gammam))
-                    mump[self.J+j-1] = -self.cdf(alpha[0]-np.dot(xelement, beta)) * self.pdf(mum[self.J+j-1]-np.dot(zmelement,gammam))
-                    gammamp = -zmelement * self.cdf(alpha[0]-np.dot(xelement, beta)) *\
-                                 (self.pdf(mum[self.J+j]-np.dot(zmelement,gammam))-self.pdf(mum[self.J+j-1]-np.dot(zmelement,gammam)))
-                    mupp = np.zeros(self.mup_len)
-                    gammapp = np.zeros(self.gammap_len)
-                    score_local = np.concatenate((betap,alphap,gammamp,mump,gammapp,mupp)) / pr
-                    score += score_local
-                elif j==0:
-                    a = self.cdf(alpha[1]-np.dot(xelement, beta)) 
-                    b = self.cdf(alpha[0]-np.dot(xelement, beta)) 
-                    c = self.cdf(mup[0]-np.dot(zpelement, gammap)) 
-                    d = self.cdf(mum[self.J-1]-np.dot(zmelement, gammam)) 
-                    pr = a + c - (a*c + b*d)
-                    if pr == 0: 
-                        pr=FLOAT_EPS
-                    # Xpdf denotes PDF for X
-                    apdf = self.pdf(alpha[1]-np.dot(xelement, beta)) 
-                    bpdf = self.pdf(alpha[0]-np.dot(xelement, beta)) 
-                    cpdf = self.pdf(mup[0]-np.dot(zpelement, gammap)) 
-                    dpdf = self.pdf(mum[self.J-1]-np.dot(zmelement, gammam)) 
-                    #Manually computed
-                    alphap = [-bpdf * d , apdf * (1.-c)]
-                    betap = -xelement * (apdf*(1.-c)-bpdf*d) #???
-                    mump = [0.0]*(self.mum_len-1) + [-b*dpdf]
-                    gammamp = zmelement * b * dpdf
-                    mupp = [(1.-a)*cpdf] + [0.0]*(self.mup_len-1)
-                    gammapp = zpelement * (a-1.) * cpdf
-                    score_local = np.concatenate((betap,alphap,gammamp,mump,gammapp,mupp)) / pr
-                    score += score_local
-                elif j>0:
-                    pr = (1-self.cdf(alpha[1]-np.dot(xelement, beta))) * \
-                            (self.cdf(mup[j]-np.dot(zpelement,gammap))-self.cdf(mup[j-1]-np.dot(zpelement,gammap)))
-                    if pr == 0: 
-                        pr=FLOAT_EPS
-                    #PARTIAL DERIVATIVES BELOW ARE DENOTED BY P (prime)
-                    alphap = [0,
-                              -self.pdf(alpha[1]-np.dot(xelement, beta)) *
-                                 (self.cdf(mup[j]-np.dot(zpelement,gammap))-self.cdf(mup[j-1]-np.dot(zpelement,gammap)))
-                              ]
-                    betap = xelement * self.pdf(alpha[1]-np.dot(xelement, beta)) * \
-                                 (self.cdf(mup[j]-np.dot(zpelement,gammap))-self.cdf(mup[j-1]-np.dot(zpelement,gammap)))
-                    mump = np.zeros(self.mum_len)
-                    gammamp = np.zeros(self.gammap_len)
-                    mupp = llist(np.zeros(self.mup_len))
-                    mupp[j]   =  (1-self.cdf(alpha[1]-np.dot(xelement, beta))) * self.pdf(mup[ j ]-np.dot(zpelement,gammap))
-                    mupp[j-1] = -(1-self.cdf(alpha[1]-np.dot(xelement, beta))) * self.pdf(mup[j-1]-np.dot(zpelement,gammap))
-                    gammapp = -zpelement * (1-self.cdf(alpha[1]-np.dot(xelement, beta))) *\
-                                 (self.pdf(mup[j]-np.dot(zpelement,gammap))-self.pdf(mup[j-1]-np.dot(zpelement,gammap))) #???
-                    score_local = np.concatenate((betap,alphap,gammamp,mump,gammapp,mupp)) / pr
-                    score += score_local
-                else:
-                    raise ValueError, "j = %i not incorrectly defined" %j
+            score += self.score_obs((alpha, beta, mum, gammam, mup, gammap, rhop, rhom),
+                                    (yelement, xelement, zmelement, zpelement) )
         return score        
+
+    def score_matrix(self, params):
+        """Score (Jacobian) matrix for loglike"""
+        beta, alpha, gammam, mum, gammap, mup, rhom, rhop = self.get_params(params)
+        
+        score = []
+        for yelement, xelement, zmelement, zpelement in self.observations_generator():
+            score.append(self.score_obs((alpha, beta, mum, gammam, mup, gammap, rhop, rhom),
+                                    (yelement, xelement, zmelement, zpelement) ) )
+
+        score = np.matrix(score)
+        return score
 
     def get_start_params(self):
         dfy  = pd.concat([df for name, df in self.y.iteritems()])
@@ -359,8 +371,6 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         start_params=np.concatenate((x_firststage1.x,x_firststage2.x,x_firststage3.x))
         return start_params
 
-
-    
     def fit(self, start_params=None, method='SLSQP', maxiter=35,
             full_output=1, disp=1, callback=None, **kwargs):
         """method are COBYLA and SLSQP [DEPRECIATED ADD JAC!]. ___Subject to check, COBYLA is better on simple tasks"""
@@ -371,7 +381,6 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
                                            (self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len,
                                             self.beta_len + self.alpha_len + self.gammam_len + self.J + self.gammap_len + self.J)
                                           ])
-        #constraints = []
         return minimize(fun = lambda x:-self.loglike(x), x0=start_params, method=method, constraints=constraints,
                         options = {'maxiter':maxiter, 'disp':disp}, callback=callback, jac =lambda x:-self.score(x)
                         )
@@ -380,10 +389,15 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
         """
         Return standard errors at optimum point, NOT SE
         """
-        hess = self.hessian(params)
-        return np.sqrt(np.linalg.inv(-hess).diagonal())
+        score_matr = self.score_matrix(params)
+        hess = -np.dot(score_matr.T, score_matr)
+        condition = np.linalg.cond(hess)
+        if condition > 499:
+            warnings.warn("Hessian matrix poorly conditioned: cond = %i"%condition)
 
-    def hessian (self, x0, epsilon=1.e-5, *args ):
+        return np.sqrt(np.diagonal(np.linalg.inv(-hess)))
+
+    def hessian (self, x0, epsilon=1.e-6, *args ):
         """
         A numerical approximation to the Hessian matrix of arbitrary function f at
         location x0 (hopefully, the minimum)
@@ -404,7 +418,7 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
             xx0 = xx[j] # Store old value
             xx[j] = xx0 + epsilon # Perturb with finite difference
             # Recalculate the partial derivatives for this new point
-            f2 = self.score(x0)
+            f2 = self.score(xx)
             hessian[:, j] = (f2 - f1)/epsilon # scale...
             xx[j] = xx0 # Restore initial value of x0        
         return hessian
@@ -412,7 +426,8 @@ class CNOP(st.discrete.discrete_model.DiscreteModel):
 
 #TEST = CNOP({'x':[12,13], 'zplus':[14,15], 'zminus': [17,17], 'J':2},[12.15, 12.30])
 #TEST.tester()
-     
+
+
     #SAMPLE get_margeff(at='overall', method='dydx', atexog=None, dummy=False, count=False) 
     def get_margeff(self, y, x, zplus, zminus, params=None):
         ''' Returns a vector of marginal effects for each unique exogenuous,
